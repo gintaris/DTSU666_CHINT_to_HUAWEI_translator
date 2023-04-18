@@ -20,16 +20,17 @@ Information about HUAWEI registers addresses
 https://forum.huawei.com/enterprise/en/how-to-connect-custom-meter-dtsu666-h-to-smartlogger1000/thread/599712-100027
 Information about CHINT registers addresses
 https://www.aggsoft.com/serial-data-logger/tutorials/modbus-data-logging/chint-instrument-dsu666-dtsu666.htm
-I divided request to CHINT into two part because for one request the number of  registers in answer is to large
+I divided each request to CHINT into two part because in Modbus standard the maximum length of the Message field is is 253 bytes for one request 
+Huawai doesn't keep this rule but it is no problem when we send answer to him
 */ 
 
-
-#include "HardwareSerial.h"  // from the <Arduino.h>  librrary  for Serial, millis()  etc.
-#include "Logging.h"
+#include <Arduino.h>
+#include <HardwareSerial.h>  	// from the <Arduino.h>  librrary  for Serial, millis()  etc.
+#include "Logging.h"			// header from eModbus Library
 #include "ModbusClientRTU.h"	// header for the Modbus Client RTU style from eModbus Library
-#include "ModbusServerRTU.h"
+#include "ModbusServerRTU.h"	// header for the Modbus Server RTU style from eModbus Library
 #include <WiFi.h>
-#include <PubSubClient.h>
+#include "PubSubClient.h"
 
 #define RX1_PIN GPIO_NUM_17  	// CHINT
 #define TX1_PIN GPIO_NUM_4  	// CHINT
@@ -40,40 +41,36 @@ I divided request to CHINT into two part because for one request the number of  
 #define HUAWEI_ID 0x0B // must be this same address as in setup Huawey inverter
 #define CHINT_ID 0x01	// must be this same address as in setup CHINT Power Meter
 #define BAUDRATE 9600
-#define HUAWEI_START_REG_1 0x0836 //SUN2000 ask for 80 registers beginning from this address	
-#define HUAWEI_START_REG_2 0x08A6 //SUN2000 ask for 10 registers but i don't know for what. Huawei did nor answer my question.
-#define CHINT_START_REG_1 0x2000  // Low registers
-#define CHINT_START_REG_2 0x401E	// High registers
-#define CHINT_REQUEST1 82			// 41  Low registers
-#define CHINT_REQUEST2 60			// 30  High registers
-#define READ_TIMER 300 // set up how often read the CHINT Power Meter
-#define MQTT_TIMER 10000  
+#define HUAWEI_START_REG_1 0x0836 	//SUN2000 ask for 80 registers beginning from this address	
+#define HUAWEI_START_REG_2 0x08A6 	//SUN2000 ask for 10 registers but i don't know for what. Huawei did nor answer my question.
+#define CHINT_START_REG_1 0x2000  	// start address Low scope Chint registers
+#define CHINT_START_REG_2 0x401E	// start address High scope Chint registers
+#define CHINT_REQUEST1 82			// 41  number of Low scope Chint's registers 
+#define CHINT_REQUEST2 60			// 30  number of High scope Chint's registers
+#define READ_TIMER 500 				// set up (in ms) how often read the CHINT Power Meter
+#define MQTT_TIMER 10000 			// set up (in ms) how often CHINT send data to MQTT Broker
 
 uint16_t CHINT_request_map [3] [6] = {{0x2000, 0x201E, 0x203A, 0x401E, 0x4034,0x4048}, {15,14,12,11,10,9},{0,15,29,41,52,62}};
 /*
-0x2000, 0x201E, 0x203A, 0x401E, 0x4034,0x4048	CHINT address request
+0x2000, 0x201E, 0x203A, 0x401E, 0x4034,0x4048	CHINT start address request
 15,		14,		12,		11,		10,		9		number requested registers
 0,		15,		29,		41,		52,		62 		start address in HuaweiTranslate Array
 */
-
-/*
+// Set your private credentials
 const char* ssid = "wifi username";
 const char* password = "wifi password";
 const char* mqttServer = "mqtt server";
-const int mqttPort = mqtt port;
+const int mqttPort = 1883;
 const char* mqttUser = "mqtt username";
 const char* mqttPassword = "mqtt password";
-*/
-
 
 bool data_ready = false;
 bool mqtt_on = true;
 uint32_t mqtt_interval = millis();
-int LED_BUILTIN = 2;   // LED on DevKit
 int errors = 1;  // count number errors 
 int numb_chint_request = 0;
 uint32_t chint_request_time = millis();
-float Chint_RegData[CHINT_REQUEST1/2+CHINT_REQUEST2/2];  // to store Chint registers
+float Chint_RegData[CHINT_REQUEST1/2+CHINT_REQUEST2/2];  // array to store Chint registers
 
 int HuaweiTranslate[CHINT_REQUEST1/2+CHINT_REQUEST2/2]=
 {6, 7, 8,   	// Phase A,B,C current   0 1 2
@@ -115,18 +112,17 @@ int Divider[CHINT_REQUEST1/2+CHINT_REQUEST2/2]=
 1,					// 33			
 100,				// 34  Frequency
 1,      			// 35			???
-1000,				// 36  Total active electricity
+1000,				// 36  Total Active Electricity 
 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
 }; 
 WiFiClient espClient;
 PubSubClient client(espClient);
 
 // The RS485 module has no halfduplex,so the second parameter with the DE/RE pin is required! https://emodbus.github.io/modbusserver-rtu-api
-//	Create a ModbusRTU Server Slave instance listening on Serial2 with 20000ms timeout RE/DE control pin GPIO_NUM_15  
-ModbusServerRTU MBserver(Serial2, 2000, REDE2_PIN);  
+//	Create a ModbusRTU Server Slave instance listening with 20000ms timeout RE/DE control pin GPIO_NUM_15  
+ModbusServerRTU MBserver(2000, REDE2_PIN);  
 //	Create a Modbus RTE Master Client RE/DE control pin GPIO_NUM_21
-ModbusClientRTU MbChint(Serial1, REDE1_PIN); 	
-
+ModbusClientRTU MbChint(REDE1_PIN); 	
 // FC03: worker to create answer  Modbus function code 0x03 (READ_HOLD_REGISTER) for Huawei Master Client
 ModbusMessage FC03(ModbusMessage request) {
 	uint16_t words; 
@@ -144,7 +140,7 @@ ModbusMessage FC03(ModbusMessage request) {
 		for (uint16_t i = 0; i < words/2; i++) {
 			response.add(*(HuReg+HuaweiTranslate[i]));   // translate CHint on to Huawei addresses
 		}
-		for (int j = 0; j < words/2; j++)Serial.printf("  rej=%i       HUAWEIaddress=%i     wart=;%8.4f\n", j,2*j+HUAWEI_START_REG_1, *(HuReg+HuaweiTranslate[j]));
+		for (int j = 0; j < words/2; j++)Serial.printf("  rej=;%i;       HUAWEIaddress=;%i;     value=;%8.4f\n", j,2*j+HUAWEI_START_REG_1, *(HuReg+HuaweiTranslate[j]));
 		}
 	else if ((address == HUAWEI_START_REG_2)&& (words==0x0A)) {   //  read data part 2 request "0B 03 08 A6 00 0A 27 24" 
 		for (uint16_t i = 0; i <  words/2; i++) {
@@ -170,48 +166,45 @@ void handleData1(ModbusMessage response, uint32_t token) {
 	switch (numb_bytes) {
 	case 60:
 		Chint_RegData_ofset= CHINT_request_map[2][0];
-//		Serial.println("CZYTAM 15 rejestrów");
+//		Serial.println("Reading 15 registers");
 		break;
 	case 56:
 		Chint_RegData_ofset= CHINT_request_map[2][1];
-//		Serial.println(" CZYTAM 14 rejestrów");
+//		Serial.println(" Reading 14 registers");
 		break;
 	case 48:
 		Chint_RegData_ofset= CHINT_request_map[2][2];
-//		Serial.println("   CZYTAM 12 rejestrów");
+//		Serial.println("   Reading 12 registers");
 		break;
 	case 44:
 		Chint_RegData_ofset= CHINT_request_map[2][3];
-//		Serial.println("     CZYTAM 11 rejestrów");
+//		Serial.println("     Reading 11 registers");
 		break;
 	case 40:
 		Chint_RegData_ofset= CHINT_request_map[2][4];
-//		Serial.println("      CZYTAM 10 rejestrów");
+//		Serial.println("      Reading 10 registers");
 		break;
 	case 36:
 		Chint_RegData_ofset= CHINT_request_map[2][5];
-//		Serial.println("      CZYTAM 9 rejestrów");
+//		Serial.println("      Reading 9 registers");
 		break;
 	default:
 		Serial.printf("error read from CHINT  words= int %i  HEX %x: ",numb_bytes, words);
 		words=0;
 		data_ready = false;
-		while(Serial.available()){
-		Serial.read();
+		while(Serial1.available()){   // clear buffer interface Seriall connected to Chint
+		Serial1.read();
 		}
 		break;
 	  }
-//	Serial.printf(" words= int %i  HEX %x: \n",numb_bytes, words);
 	for (uint8_t i = 0; i < words/4; i++) {
 	offs = response.get(offs, Chint_RegData[Chint_RegData_ofset]);
-//	Serial.print(Chint_RegData[Chint_RegData_ofset], HEX);
-//	Serial.printf(" %i ", i);
 	Chint_RegData[Chint_RegData_ofset]=Chint_RegData[Chint_RegData_ofset]/Divider[Chint_RegData_ofset];
+//	Serial.printf("regCHINT=%i ;val=;%8.4f\n",Chint_RegData_ofset, Chint_RegData[Chint_RegData_ofset]);
 	Chint_RegData_ofset++;
 	}
 	if (words>0) data_ready = true;
 	chint_request_time = token;
-
 }
 
 // Define an onError handler function to receive error responses
@@ -273,14 +266,14 @@ void handleMqttPublish (){
 		sendMessage("Current", "ia_A", Chint_RegData[6]);
 		sendMessage("Current", "ib_A", Chint_RegData[7]);
 		sendMessage("Current", "ic_A", Chint_RegData[8]);
-		sendMessage("Power", "pt_kW", Chint_RegData[9]);
-		sendMessage("Power", "pa_kW", Chint_RegData[10]);
-		sendMessage("Power", "pb_kW", Chint_RegData[11]);
-		sendMessage("Power", "pc_kW", Chint_RegData[12]);
-		sendMessage("Power", "qt_kVar", Chint_RegData[13]);
-		sendMessage("Power", "qa_kVar", Chint_RegData[14]);
-		sendMessage("Power", "qb_kVar", Chint_RegData[15]);
-		sendMessage("Power", "qc_kVar", Chint_RegData[16]);
+		sendMessage("Power", "pt_W", Chint_RegData[9]);
+		sendMessage("Power", "pa_W", Chint_RegData[10]);
+		sendMessage("Power", "pb_W", Chint_RegData[11]);
+		sendMessage("Power", "pc_W", Chint_RegData[12]);
+		sendMessage("Power", "qt_Var", Chint_RegData[13]);
+		sendMessage("Power", "qa_Var", Chint_RegData[14]);
+		sendMessage("Power", "qb_Var", Chint_RegData[15]);
+		sendMessage("Power", "qc_Var", Chint_RegData[16]);
 		sendMessage("PowerFactor", "", Chint_RegData[21]);
 		sendMessage("Frequency", "", Chint_RegData[34]);
 		sendMessage("EnergyDemand", "", Chint_RegData[36]);
@@ -302,19 +295,22 @@ void setup() {
 	while (!Serial) { }
 	Serial.print("Serial0 OK __  ");
 	if (mqtt_on) setMqttConnection();	
-	Serial1.begin(9600, SERIAL_8N2, RX1_PIN, TX1_PIN); //Serial1 connected to Modbus RTU CHINT  
+	RTUutils::prepareHardwareSerial(Serial1);
+	Serial1.begin(BAUDRATE, SERIAL_8N2, RX1_PIN, TX1_PIN);
+	//Serial1 connected to Modbus RTU CHINT  
 	while (!Serial1) {Serial.println("CHINT port is not ready");}
 	Serial.print("Serial1 OK __  ");
     MbChint.onDataHandler(&handleData1); 	// Set up ModbusRTU client - provide onData handler function	
     MbChint.onErrorHandler(&handleError);	// - provide onError handler function
     MbChint.setTimeout(2000);			// Set message timeout to 2000ms
-    MbChint.begin(0);				// Start ModbusRTU background task on CPU 0
+    MbChint.begin(Serial1,0);				// Start ModbusRTU background task on CPU 0
 
-	Serial2.begin(9600, SERIAL_8N2, RX2_PIN, TX2_PIN);  //Serial2 connected to Modbus RTU SUN2000
+	RTUutils::prepareHardwareSerial(Serial2);
+	Serial2.begin(BAUDRATE, SERIAL_8N2, RX2_PIN, TX2_PIN);  //Serial2 connected to Modbus RTU SUN2000
 	while (!Serial2) {Serial.println("Inverter port is not ready");}
 	Serial.println("Serial2 OK __");
 	MBserver.registerWorker(HUAWEI_ID, READ_HOLD_REGISTER, &FC03 ); // Register served function code worker for server 11, FC 0x03
-	MBserver.start(1); // Start ModbusRTU background task on CPU 1
+	MBserver.begin(Serial2, 1); // Start ModbusRTU background task on CPU 1
 
 }
 
@@ -338,8 +334,8 @@ void loop() {
 			data_ready = false;		
 			Serial.printf("Loop end time %ld  (ms)\n", millis());
 			// if you want to print on monitor port the data received from CHINT
-			for (uint8_t j = 0; j < (CHINT_REQUEST1)/2; ++j)Serial.printf("rej=%i      LoadresCHINT=%i;      wart=;%8.4f\n", j,(2*j+ CHINT_START_REG_1), Chint_RegData[j]);
-			for (uint8_t i = 0; i < (CHINT_REQUEST2)/2; ++i)Serial.printf("rej=%i      HiadresCHINT=%i;      wart=;%8.4f\n", i+(CHINT_REQUEST1/2),(2*i+ CHINT_START_REG_2), Chint_RegData[(CHINT_REQUEST1/2)+i]);
+			for (uint8_t j = 0; j < (CHINT_REQUEST1)/2; ++j)Serial.printf("rej=%i;      LoadresCHINT=%i;      value=;%8.4f\n", j,(2*j+ CHINT_START_REG_1), Chint_RegData[j]);
+			for (uint8_t i = 0; i < (CHINT_REQUEST2)/2; ++i)Serial.printf("rej=%i;      HiadresCHINT=%i;      value=;%8.4f\n", i+(CHINT_REQUEST1/2),(2*i+ CHINT_START_REG_2), Chint_RegData[(CHINT_REQUEST1/2)+i]);
 			
 			if ((millis()-mqtt_interval> MQTT_TIMER)and mqtt_on){
 				handleMqttPublish ();
