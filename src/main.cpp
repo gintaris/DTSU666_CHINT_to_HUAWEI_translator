@@ -23,7 +23,7 @@ https://www.aggsoft.com/serial-data-logger/tutorials/modbus-data-logging/chint-i
 I divided each request to CHINT into two part because in Modbus standard the maximum length of the Message field is is 253 bytes for one request 
 Huawai doesn't keep this rule but it is no problem when we send answer to him
 */ 
-build_flags = -I "C:\Users\GintarisZimnickas\.platformio\packages\framework-arduinoespressif32\cores\esp32"
+//build_flags = -I "C:\Users\GintarisZimnickas\.platformio\packages\framework-arduinoespressif32\cores\esp32"
 
 #include <Arduino.h>
 #include <HardwareSerial.h>  	// from the <Arduino.h>  librrary  for Serial, millis()  etc.
